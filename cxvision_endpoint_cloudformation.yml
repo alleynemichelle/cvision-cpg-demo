@@ -1,0 +1,363 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Computer vision solution for tracking people and generate metrics that can be subsequently analyzed to improve the user experience"
+Parameters:
+  SolutionName:
+    Type: "String"
+    Default: "cxvisionSolution"
+    MinLength: 1
+
+  S3BucketName:
+    Type: "String"
+    Description: "S3 Bucket name that will be created and used to store results, videos, metrics"
+    Default: "cxvisionsolution"
+    MinLength: 1
+
+  S3BucketLambdaZipCode:
+    Type: "String"
+    Description: "S3 Bucket where you have uploaded the zip code files to be used by each lambda function"
+    MinLength: 1
+
+  S3UploadResultsDir:
+    Type: "String"
+    Description: "S3 Bucket path to store results processed by the endpoint"
+    Default: "endpoint_processing_results"
+    MinLength: 1
+
+  S3VideosToProcessDir:
+    Type: "String"
+    Description: "S3 Bucket path of videos to be processed by the endpoint. All videos uploaded to this path won't be cut"
+    Default: "videos_to_process"
+    MinLength: 1
+
+  S3VideosToCutDir:
+    Type: "String"
+    Description: "S3 Bucket path of videos to be cut into fragments. All videos uploaded here will be cut in fragments and then uploaded to the S3VideosToProcessDir"
+    Default: "raw_videos"
+    MinLength: 1
+
+  EndpointName:
+    Type: "String"
+    Description: "Endpoint name previously deployed"
+    MinLength: 1
+
+  Areas:
+    Type: "String"
+    Description: "Defines the areas and zones of the videos. Please, see how to define the areas in the Define Areas Notebook"
+    Default: "[{'area':'example1','dwell_zone':'[(200,500),(500,510),(490,710),(190,700)]','service_zone':'[(540,580),(1000,645),(990,720),(530,655)]'},{'area':'example2','dwell_zone':'[]','service_zone':'[]'}]"
+
+  FragmentDuration:
+    Type: "String"
+    Description: "Duration in seconds of cut videos lambda. We recommend that the duration of each video fragment is no longer than 60 seconds"
+    Default: "20"
+    MinLength: 1
+
+  SuccessSNSTopicARN:
+    Type: "String"
+    Description: "The success sns topic previously created attached to the asynchronous endpoint"
+    MinLength: 1
+
+
+
+
+Resources:
+  LambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: !Sub "When a previous video has been successfully processed by the ${SolutionName} endpoint, this function will be triggered by the SNS notification, that will invoke the endpoint with the next video"
+      Environment:
+        Variables:
+          QUEUE_URL: !Sub "https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${SQSQueue.QueueName}"
+      FunctionName: !Sub "invoke_endpoint_${SolutionName}"
+      Handler: "lambda_function.lambda_handler"
+      Architectures:
+        - "x86_64"
+      Code:
+        S3Bucket: !Ref S3BucketLambdaZipCode
+        S3Key: "invoke_endpoint.zip"
+      MemorySize: 128
+      Role: !GetAtt IAMRoleLambda1.Arn
+      Runtime: "python3.7"
+      Timeout: 120
+      TracingConfig:
+        Mode: "PassThrough"
+      EphemeralStorage:
+        Size: 512
+
+  LambdaFunction2:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: "This function will be triggered when videos are uploaded to a specific S3 Bucket Path, and then those videos will be enqueued to a FIFO queue to be processed later"
+      Environment:
+        Variables:
+          S3_UPLOAD_RESULTS_DIR: !Sub "${S3BucketName}/${S3UploadResultsDir}"
+          ENDPOINT_NAME: !Ref EndpointName
+          S3_INPUT_DATA_ENDPOINT_DIR: "input_data_endpoint/"
+          QUEUE_URL: !Sub "https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${SQSQueue.QueueName}"
+          AREAS: !Ref Areas
+          OUT_BUCKET: !Ref S3BucketName
+          REFRESH_THRESHOLD: 60
+          DIVISION_AREA: 600
+          TRACKING_THRESHOLD: 70
+          DETECTION_THRESHOLD: 60
+          FRAME_RATE: 3
+      FunctionName: !Sub "enqueue_video_${SolutionName}"
+      Handler: "lambda_function.lambda_handler"
+      Architectures:
+        - "x86_64"
+      Code:
+        S3Bucket: !Ref S3BucketLambdaZipCode
+        S3Key: "enqueue_video.zip"
+      MemorySize: 128
+      Role: !GetAtt IAMRoleLambda2.Arn
+      Runtime: "python3.7"
+      Timeout: 3
+      TracingConfig:
+        Mode: "PassThrough"
+      EphemeralStorage:
+        Size: 512
+      Tags:
+        - Key: "lambda-console:blueprint"
+          Value: "s3-get-object-python"
+
+  LambdaFunction3:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: !Sub "This function allows to cut a video file into fragments and upload them to a S3 Bucket Path which will trigger another lambda to invoke the ${SolutionName} endpoint "
+      Environment:
+        Variables:
+          OUTPUT_S3_PREFIX: !Sub "${S3VideosToProcessDir}/"
+          FRAGMENT_DURATION: !Ref FragmentDuration
+          BUCKET: !Ref S3BucketName
+      FunctionName: !Sub "cut_videos_${SolutionName}"
+      Handler: "lambda_function.lambda_handler"
+      Architectures:
+        - "x86_64"
+      Code:
+        S3Bucket: !Ref S3BucketLambdaZipCode
+        S3Key: "cut_videos.zip"
+      MemorySize: 128
+      Role: !GetAtt IAMRoleLambda3.Arn
+      Runtime: "python3.9"
+      Timeout: 900
+      TracingConfig:
+        Mode: "PassThrough"
+      Layers:
+        - !Ref LambdaLayerVersion
+      EphemeralStorage:
+        Size: 512
+
+  LambdaLayerVersion:
+    Type: "AWS::Lambda::LayerVersion"
+    Properties:
+      Description: ""
+      CompatibleRuntimes:
+        - "python3.9"
+      LayerName: "ffmpeg"
+      Content:
+        S3Bucket: !Ref S3BucketLambdaZipCode
+        S3Key: "ffmpeg.zip"
+
+  S3InvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunction2
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${S3BucketName}
+
+  S3InvokeLambdaPermission2:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunction3
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${S3BucketName}
+
+  IAMRoleLambda1:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      RoleName: !Sub "${SolutionName}InvokeEndpointRole"
+      AssumeRolePolicyDocument: !Sub '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Ref IAMManagedPolicy
+        - !Ref AWSLambda1CloudWatchPolicy
+      Description: !Sub "Allows ${SolutionName} InvokeEndpoint Lambda Function to call necessary AWS services"
+
+  IAMRoleLambda2:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      RoleName: !Sub "${SolutionName}EnqueueVideoRole"
+      AssumeRolePolicyDocument: !Sub '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Ref IAMManagedPolicy
+        - !Ref AWSLambda2CloudWatchPolicy
+      Description: !Sub "Allows ${SolutionName} Enqueue Video Role Lambda Function to call necessary AWS services"
+
+  IAMRoleLambda3:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/"
+      RoleName: !Sub "${SolutionName}CutVideosRole"
+      AssumeRolePolicyDocument: !Sub '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Ref IAMManagedPolicy
+        - !Ref AWSLambda3CloudWatchPolicy
+      Description: !Sub "Allows ${SolutionName} Cut Videos Role Lambda Function to call necessary AWS services"
+
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt LambdaFunction.Arn
+      Protocol: lambda
+      TopicArn: !Ref SuccessSNSTopicARN
+
+  SQSQueue:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      ContentBasedDeduplication: "true"
+      DelaySeconds: "0"
+      FifoQueue: "true"
+      MaximumMessageSize: "262144"
+      MessageRetentionPeriod: "345600"
+      ReceiveMessageWaitTimeSeconds: "0"
+      VisibilityTimeout: "1"
+      QueueName: !Sub "${SolutionName}-endpoint.fifo"
+
+  AWSLambda1CloudWatchPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      ManagedPolicyName: !Sub "InvokeEndpointExecutionRole-${SolutionName}"
+      Path: "/service-role/"
+      PolicyDocument: !Sub |
+        {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Action":  [
+                          "logs:CreateLogStream",
+                          "logs:PutLogEvents"
+                      ],
+                      "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/invoke_endpoint_${SolutionName}:*"
+                  }
+                ]
+        }
+
+  AWSLambda2CloudWatchPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      ManagedPolicyName: !Sub "EnqueueVideoExecutionRole-${SolutionName}"
+      Path: "/service-role/"
+      PolicyDocument: !Sub |
+        {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Action":  [
+                          "logs:CreateLogStream",
+                          "logs:PutLogEvents"
+                      ],
+                      "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/enqueue_video_${SolutionName}:*"
+                  }
+                ]
+        }
+
+  AWSLambda3CloudWatchPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      ManagedPolicyName: !Sub "CutVideosExecutionRole-${SolutionName}"
+      Path: "/service-role/"
+      PolicyDocument: !Sub |
+        {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Action":  [
+                          "logs:CreateLogStream",
+                          "logs:PutLogEvents"
+                      ],
+                      "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cut_videos_${SolutionName}:*"
+                  }
+                ]
+        }
+
+  IAMManagedPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      ManagedPolicyName: !Sub "AWSLambdaExecutionRole-${SolutionName}"
+      Path: "/service-role/"
+      PolicyDocument: !Sub |
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": "logs:CreateLogGroup",
+                    "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject",
+                        "s3:PutObject"
+                    ],
+                    "Resource": [
+                      "arn:aws:s3:::${S3BucketName}/*",
+                      "arn:aws:s3:::${S3BucketLambdaZipCode}/*"
+                      ]
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:ListBucket"
+                    ],
+                    "Resource": [
+                      "arn:aws:s3:::${S3BucketName}",
+                      "arn:aws:s3:::${S3BucketLambdaZipCode}"
+                      ]
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": "sagemaker:InvokeEndpoint",
+                    "Resource": "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/${EndpointName}"
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "sqs:DeleteMessage",
+                        "sqs:ReceiveMessage",
+                        "sqs:SendMessage",
+                        "sqs:GetQueueAttributes"
+                    ],
+                    "Resource": "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${SolutionName}-endpoint.fifo"
+                }
+            ]
+        }
+
+  S3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref S3BucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: "Prefix"
+                    Value: !Sub "${S3VideosToProcessDir}/"
+            Function: !GetAtt LambdaFunction2.Arn
+          - Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: "Prefix"
+                    Value: !Sub "${S3VideosToCutDir}/"
+            Function: !GetAtt LambdaFunction3.Arn

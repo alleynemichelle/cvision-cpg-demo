@@ -1,0 +1,126 @@
+import cv2
+
+config = {
+    "font": cv2.FONT_HERSHEY_COMPLEX,
+    "timezone": "America/Caracas",
+    "model_input_size": (640, 640),
+    "bbox_thickness": 1,
+    "text_thickness": 1,
+    "font_scale_bbox": 0.3,
+    "font_scale_labels": 0.6,
+    "item_max_duration": 2,
+    "text_color" : (255, 255, 255),     # White
+    "bbox_default_color" : (255, 0, 0), # Dark blue
+    "resumen_color" : (252, 227, 3),    # Light blue
+    "car_color": (255, 0, 0),
+    "open_box_color": (0, 128, 255),
+    "closed_box_color": (50,0,255),
+    "item_color": (0, 128, 255),
+    "s3_bucket": "cvision-cpg-demo",
+    "dynamo_table": "cpg_demo_booth",
+    "tracker_config": {
+        "ckpt": "ckpt.t7",
+        "threshold": 80.0
+    },
+    "classes_def": {
+        "person": {
+            "area": "all"
+        }
+    },
+    "detectors_config": {
+        "coco_dataset": {
+        "ckpt": "yolox_s.pth.tar",
+        "threshold": 70.0,
+        "filter_classes": [],
+        "track_classes": ["person"],
+        "classes": [     
+            "person",
+            "bicycle",
+            "car",
+            "motorcycle",
+            "airplane",
+            "bus",
+            "train",
+            "truck",
+            "boat",
+            "traffic light",
+            "fire hydrant",
+            "stop sign",
+            "parking meter",
+            "bench",
+            "bird",
+            "cat",
+            "dog",
+            "horse",
+            "sheep",
+            "cow",
+            "elephant",
+            "bear",
+            "zebra",
+            "giraffe",
+            "backpack",
+            "umbrella",
+            "handbag",
+            "tie",
+            "suitcase",
+            "frisbee",
+            "skis",
+            "snowboard",
+            "sports ball",
+            "kite",
+            "baseball bat",
+            "baseball glove",
+            "skateboard",
+            "surfboard",
+            "tennis racket",
+            "bottle",
+            "wine glass",
+            "cup",
+            "fork",
+            "knife",
+            "spoon",
+            "bowl",
+            "banana",
+            "apple",
+            "sandwich",
+            "orange",
+            "broccoli",
+            "carrot",
+            "hot dog",
+            "pizza",
+            "donut",
+            "cake",
+            "chair",
+            "couch",
+            "potted plant",
+            "bed",
+            "dining table",
+            "toilet",
+            "tv",
+            "laptop",
+            "mouse",
+            "remote",
+            "keyboard",
+            "cell phone",
+            "microwave",
+            "oven",
+            "toaster",
+            "sink",
+            "refrigerator",
+            "book",
+            "clock",
+            "vase",
+            "scissors",
+            "teddy bear",
+            "hair drier",
+            "toothbrush"
+        ]
+    } 
+    },
+    "events_info": {
+        "max-task-time": {
+            "limit": 30,
+            "repeat-cycle": 5
+        }
+}
+}
